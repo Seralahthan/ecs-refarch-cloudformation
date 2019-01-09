@@ -1,0 +1,62 @@
+Description: >
+  This is an example of a long running RDS MySQL Database.
+
+Parameters:
+  SecurityGroup:
+    Description: Select the Security Group to use for the RDS
+    Type: AWS::EC2::SecurityGroup::Id
+
+  # VPC:
+  #   Type: AWS::EC2::VPC::Id
+  #   Description: Choose which VPC the RDS should be deployed to
+
+  PublicSubnet1Id:
+    Type: AWS::EC2::Subnet::Id
+    Description: Choose which Public Subnet 01 the RDS should be deployed to
+
+  PublicSubnet2Id:
+    Type: AWS::EC2::Subnet::Id
+    Description: Choose which Public Subnet 02 the RDS should be deployed to
+
+Resources:
+  DBSubnetGroup:
+    Type: AWS::RDS::DBSubnetGroup
+    Properties:
+      DBSubnetGroupDescription: "DB Subnet Group Description"
+      SubnetIds:
+        - !Ref PublicSubnet1Id
+        - !Ref PublicSubnet2Id
+      Tags: 
+        - Key: "Name"
+          Value: "DB Subnet Group"
+
+  DBInstance:
+    Type: AWS::RDS::DBInstance
+    Properties: 
+      DBName: "testDB"
+      AllocatedStorage: "20"
+      DBInstanceClass: "db.t2.micro"
+      Engine: "MySQL"
+      EngineVersion: "5.7"
+      MasterUsername: "testballerina"
+      MasterUserPassword: "testballerina"
+      PubliclyAccessible: true
+      Tags: 
+        - Key: "Name"
+          Value: "My SQL Database"
+      DBSubnetGroupName: !Ref DBSubnetGroup
+      VPCSecurityGroups: 
+        - !Ref SecurityGroup
+    DeletionPolicy: "Snapshot"
+
+Outputs:
+  DBUrl:
+    Description: A reference to the created MySQL Database URL
+    Value: !GetAtt DBInstance.Endpoint.Address
+
+  DBPort: 
+    Description: A reference to the created MySQL Database Port
+    Value: !GetAtt DBInstance.Endpoint.Port
+
+
+  
