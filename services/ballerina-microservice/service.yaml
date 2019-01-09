@@ -1,0 +1,309 @@
+Description: >
+  This is an example of a long running ECS service that needs to connect to another ECS service (product-service)
+  via it's load balancer. We use environment variables to pass the URL of the product-service to this one's container(s).
+
+Parameters:
+  VPC:
+    Description: The VPC that the ECS cluster is deployed to
+    Type: AWS::EC2::VPC::Id
+
+  Cluster:
+    Description: Please provide the ECS Cluster ID that this service should run on
+    Type: String
+
+  DesiredCount: 
+    Description: How many instances of this task should we run across our cluster?
+    Type: Number
+    Default: 4
+
+  MaxCount: 
+    Description: Maximum number of instances of this task we can run across our cluster
+    Type: Number
+    Default: 8
+
+  Listener:
+    Description: The Application Load Balancer listener to register with
+    Type: String
+
+  Path:
+    Description: The path to register with the Application Load Balancer
+    Type: String
+    Default: /utility/*
+
+  ECSServiceAutoScalingRoleARN:
+    Description: The ECS service auto scaling role ARN
+    Type: String
+
+  ECSAutoScalingGroupName:
+    Description: The ECS service auto scaling group name
+    Type: String
+
+  DBEndpointURL:
+    Description: The RDS MySQL Database Endpoint URL
+    Type: String
+
+
+Resources:
+  Service:
+    Type: AWS::ECS::Service
+    DependsOn: ListenerRule
+    Properties:
+      Cluster: !Ref Cluster
+      Role: !Ref ServiceRole
+      DesiredCount: !Ref DesiredCount
+      TaskDefinition: !Ref TaskDefinition
+      PlacementConstraints: 
+        - Type: distinctInstance
+      LoadBalancers:
+        - ContainerName: "utility"
+          ContainerPort: 8280
+          TargetGroupArn: !Ref TargetGroup
+
+  TaskDefinition:
+    Type: AWS::ECS::TaskDefinition
+    Properties:
+      Family: utility
+      ContainerDefinitions:
+        - Name: utility
+          Essential: true
+          Image: 765515728978.dkr.ecr.us-west-2.amazonaws.com/ecr:v1.0
+          Environment: 
+          - Name: 'DBEndpointURL'
+            Value: !Ref DBEndpointURL
+          Memory: 1024
+          PortMappings:
+            - ContainerPort: 8280
+          LogConfiguration:
+            LogDriver: awslogs
+            Options:
+              awslogs-group: !Ref CloudWatchLogsGroup
+              awslogs-region: !Ref AWS::Region
+
+  CloudWatchLogsGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Ref AWS::StackName
+      RetentionInDays: 365
+
+  TargetGroup:
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    Properties:
+      VpcId: !Ref VPC
+      Port: 80
+      Protocol: HTTP
+      Matcher:
+        HttpCode: 200-299
+      HealthCheckIntervalSeconds: 10
+      HealthCheckPath: /utility/loadtest
+      HealthCheckProtocol: HTTP
+      HealthCheckTimeoutSeconds: 5
+      HealthyThresholdCount: 2
+
+  ListenerRule:
+    Type: AWS::ElasticLoadBalancingV2::ListenerRule
+    Properties:
+      ListenerArn: !Ref Listener
+      Priority: 1
+      Conditions:
+        - Field: path-pattern
+          Values:
+            - !Ref Path
+      Actions:
+        - TargetGroupArn: !Ref TargetGroup
+          Type: forward
+
+  # This IAM Role grants the service access to register/unregister with the
+  # Application Load Balancer (ALB). It is based on the default documented here:
+  # http://docs.aws.amazon.com/AmazonECS/latest/developerguide/service_IAM_role.html
+  ServiceRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub ecs-service-${AWS::StackName}
+      Path: /
+      AssumeRolePolicyDocument: |
+        {
+            "Statement": [{
+                "Effect": "Allow",
+                "Principal": { "Service": [ "ecs.amazonaws.com" ]},
+                "Action": [ "sts:AssumeRole" ]
+            }]
+        }
+      Policies:
+        - PolicyName: !Sub ecs-service-${AWS::StackName}
+          PolicyDocument:
+            {
+              "Version": "2012-10-17",
+              "Statement":
+                [
+                {
+                  "Effect": "Allow",
+                  "Action":
+                    [
+                      "ec2:AuthorizeSecurityGroupIngress",
+                      "ec2:Describe*",
+                      "elasticloadbalancing:DeregisterInstancesFromLoadBalancer",
+                      "elasticloadbalancing:Describe*",
+                      "elasticloadbalancing:RegisterInstancesWithLoadBalancer",
+                      "elasticloadbalancing:DeregisterTargets",
+                      "elasticloadbalancing:DescribeTargetGroups",
+                      "elasticloadbalancing:DescribeTargetHealth",
+                      "elasticloadbalancing:RegisterTargets"
+                    ],
+                  "Resource": "*"
+                }
+                ]
+            }
+
+  ServiceScalableTarget:
+    Type: "AWS::ApplicationAutoScaling::ScalableTarget"
+    Properties:
+      MaxCapacity: !Ref MaxCount
+      MinCapacity: !Ref DesiredCount
+      ResourceId: !Join
+        - /
+        - - service
+          - !Ref Cluster
+          - !GetAtt Service.Name
+      RoleARN: !Ref ECSServiceAutoScalingRoleARN
+      ScalableDimension: ecs:service:DesiredCount
+      ServiceNamespace: ecs
+
+  ServiceScaleOutPolicy:
+    Type: "AWS::ApplicationAutoScaling::ScalingPolicy"
+    Properties:
+      PolicyName: ServiceScaleOutPolicy
+      PolicyType: StepScaling
+      ScalingTargetId: !Ref ServiceScalableTarget
+      StepScalingPolicyConfiguration:
+        AdjustmentType: ChangeInCapacity
+        Cooldown: 1800
+        MetricAggregationType: Average
+        StepAdjustments:
+          - MetricIntervalLowerBound: 0
+            ScalingAdjustment: 1
+
+  ServiceScaleInPolicy:
+    Type: "AWS::ApplicationAutoScaling::ScalingPolicy"
+    Properties:
+      PolicyName: ServiceScaleInPolicy
+      PolicyType: StepScaling
+      ScalingTargetId: !Ref ServiceScalableTarget
+      StepScalingPolicyConfiguration:
+        AdjustmentType: ChangeInCapacity
+        Cooldown: 1800
+        MetricAggregationType: Average
+        StepAdjustments:
+          - MetricIntervalUpperBound: 0
+            ScalingAdjustment: -1
+
+  NetworkInScaleOutPolicy:
+    Type: "AWS::ApplicationAutoScaling::ScalingPolicy"
+    Properties:
+      PolicyName: NetworkInScaleOutPolicy
+      PolicyType: StepScaling
+      ScalingTargetId: !Ref ServiceScalableTarget
+      StepScalingPolicyConfiguration:
+        AdjustmentType: PercentChangeInCapacity
+        Cooldown: 1800
+        MetricAggregationType: Average
+        StepAdjustments:
+          - MetricIntervalLowerBound: 0
+            MetricIntervalUpperBound: 100000
+            ScalingAdjustment: 25
+          - MetricIntervalLowerBound: 100000
+            ScalingAdjustment: 50
+
+  NetworkInScaleInPolicy:
+    Type: "AWS::ApplicationAutoScaling::ScalingPolicy"
+    Properties:
+      PolicyName: NetworkInScaleInPolicy
+      PolicyType: StepScaling
+      ScalingTargetId: !Ref ServiceScalableTarget
+      StepScalingPolicyConfiguration:
+        AdjustmentType: ChangeInCapacity
+        Cooldown: 1800
+        MetricAggregationType: Average
+        StepAdjustments:
+          - MetricIntervalUpperBound: 0
+            ScalingAdjustment: -1
+
+  CPUScaleOutAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: CPU utilization greater than 90%
+      AlarmDescription: Alarm if cpu utilization greater than 90% of reserved cpu
+      Namespace: AWS/ECS
+      MetricName: CPUUtilization
+      Dimensions:
+        - Name: ClusterName
+          Value: !Ref Cluster
+        - Name: ServiceName
+          Value: !GetAtt Service.Name
+      Statistic: Maximum
+      Period: "300"
+      EvaluationPeriods: "3"
+      Threshold: "90"
+      ComparisonOperator: GreaterThanThreshold
+      AlarmActions:
+        - !Ref ServiceScaleOutPolicy
+
+  CPUScaleInAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: CPU utilization less than 70%
+      AlarmDescription: Alarm if cpu utilization less than 70% of reserved cpu
+      Namespace: AWS/ECS
+      MetricName: CPUUtilization
+      Dimensions:
+        - Name: ClusterName
+          Value: !Ref Cluster
+        - Name: ServiceName
+          Value: !GetAtt Service.Name
+      Statistic: Maximum
+      Period: "300"
+      EvaluationPeriods: "3"
+      Threshold: "70"
+      ComparisonOperator: LessThanThreshold
+      AlarmActions:
+        - !Ref ServiceScaleInPolicy
+
+  NetworkInScaleInAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: NetworkIn ScaleIn Service Alarm
+      AlarmDescription: Alarm if network request incoming bytes greater than 200 kilo bytes
+      Namespace: AWS/EC2
+      MetricName: NetworkIn
+      Statistic: Average
+      Period: "60"
+      EvaluationPeriods: "5"
+      Threshold: "200000"
+      TreatMissingData: notBreaching
+      Unit: "Bytes/Second"
+      ComparisonOperator: LessThanThreshold
+      Dimensions:
+        - Name: AutoScalingGroupName
+          Value: !Ref ECSAutoScalingGroupName
+      AlarmActions:
+        - !Ref NetworkInScaleInPolicy
+
+  NetworkInScaleOutAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: NetworkIn ScaleOut Service Alarm
+      AlarmDescription: Alarm if network request incoming bytes greater than 200 kilo bytes
+      Namespace: AWS/EC2
+      MetricName: NetworkIn
+      Statistic: Average
+      Period: "60"
+      EvaluationPeriods: "2"
+      Threshold: "200000"
+      TreatMissingData: notBreaching
+      Unit: "Bytes/Second"
+      ComparisonOperator: GreaterThanThreshold
+      Dimensions:
+        - Name: AutoScalingGroupName
+          Value: !Ref ECSAutoScalingGroupName
+      AlarmActions:
+        - !Ref NetworkInScaleOutPolicy
+

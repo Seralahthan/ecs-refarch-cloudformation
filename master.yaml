@@ -11,14 +11,14 @@ Description: >
   Finally, it deploys a pair of example ECS services from containers published in 
   Amazon EC2 Container Registry (Amazon ECR).
 
-  Last Modified: 22nd September 2016
-  Author: Paul Maddox <pmaddox@amazon.com>
+  Last Modified: 10th January 2019
+  Author: Seralahthan <seralahthan@wso2.com>
 
 Resources:
   VPC:
     Type: AWS::CloudFormation::Stack
     Properties:
-      TemplateURL: https://s3.amazonaws.com/ecs-refarch-cloudformation/infrastructure/vpc.yaml
+      TemplateURL: https://s3-us-west-2.amazonaws.com/seran.cloudformation-templates/vpc.yaml
       Parameters:
         EnvironmentName: !Ref AWS::StackName
         VpcCIDR: 10.180.0.0/16
@@ -30,7 +30,7 @@ Resources:
   SecurityGroups:
     Type: AWS::CloudFormation::Stack
     Properties:
-      TemplateURL: https://s3.amazonaws.com/ecs-refarch-cloudformation/infrastructure/security-groups.yaml
+      TemplateURL: https://s3-us-west-2.amazonaws.com/seran.cloudformation-templates/security-groups.yaml
       Parameters:
         EnvironmentName: !Ref AWS::StackName
         VPC: !GetAtt VPC.Outputs.VPC
@@ -38,63 +38,60 @@ Resources:
   ALB:
     Type: AWS::CloudFormation::Stack
     Properties:
-      TemplateURL: https://s3.amazonaws.com/ecs-refarch-cloudformation/infrastructure/load-balancers.yaml
+      TemplateURL: https://s3-us-west-2.amazonaws.com/seran.cloudformation-templates/load-balancers.yaml
       Parameters:
         EnvironmentName: !Ref AWS::StackName
         VPC: !GetAtt VPC.Outputs.VPC
         Subnets: !GetAtt VPC.Outputs.PublicSubnets
         SecurityGroup: !GetAtt SecurityGroups.Outputs.LoadBalancerSecurityGroup
 
+  MySQLDB:
+    Type: AWS::CloudFormation::Stack
+    Properties:
+      TemplateURL: https://s3-us-west-2.amazonaws.com/seran.cloudformation-templates/mysqldb.yaml
+      Parameters:
+        SecurityGroup: !GetAtt SecurityGroups.Outputs.RDSSecurityGroup
+        PublicSubnet1Id: !GetAtt VPC.Outputs.PublicSubnet1
+        PublicSubnet2Id: !GetAtt VPC.Outputs.PublicSubnet2
+
   ECS:
     Type: AWS::CloudFormation::Stack
     Properties:
-      TemplateURL: https://s3.amazonaws.com/ecs-refarch-cloudformation/infrastructure/ecs-cluster.yaml
+      TemplateURL: https://s3-us-west-2.amazonaws.com/seran.cloudformation-templates/ecs-cluster.yaml
       Parameters:
         EnvironmentName: !Ref AWS::StackName
-        InstanceType: t2.large
+        InstanceType: t2.medium
         ClusterSize: 4
         VPC: !GetAtt VPC.Outputs.VPC
         SecurityGroup: !GetAtt SecurityGroups.Outputs.ECSHostSecurityGroup
         Subnets: !GetAtt VPC.Outputs.PrivateSubnets
 
-  ProductService:
+  ballerinaService:
     Type: AWS::CloudFormation::Stack
+    DependsOn: 
+      - MySQLDB
+      - ECS
     Properties:
-      TemplateURL: https://s3.amazonaws.com/ecs-refarch-cloudformation/services/product-service/service.yaml
+      TemplateURL: https://s3-us-west-2.amazonaws.com/seran.cloudformation-templates/service.yaml
       Parameters:
         VPC: !GetAtt VPC.Outputs.VPC
         Cluster: !GetAtt ECS.Outputs.Cluster
-        DesiredCount: 2
+        DesiredCount: 4
         Listener: !GetAtt ALB.Outputs.Listener
-        Path: /products
-
-  WebsiteService:
-    Type: AWS::CloudFormation::Stack
-    Properties:
-      TemplateURL: https://s3.amazonaws.com/ecs-refarch-cloudformation/services/website-service/service.yaml
-      Parameters:
-        VPC: !GetAtt VPC.Outputs.VPC
-        Cluster: !GetAtt ECS.Outputs.Cluster
-        DesiredCount: 2
-        ProductServiceUrl:
-          !Join ["/", [!GetAtt ALB.Outputs.LoadBalancerUrl, "products"]]
-        Listener: !GetAtt ALB.Outputs.Listener
-        Path: /
+        Path: /utility/*
         ECSServiceAutoScalingRoleARN: !GetAtt ECS.Outputs.ECSServiceAutoScalingRole
+        ECSAutoScalingGroupName: !GetAtt ECS.Outputs.ECSAutoScalingGroupName
+        DBEndpointURL:  !GetAtt MySQLDB.Outputs.DBUrl
 
   LifecycleHook:
     Type: AWS::CloudFormation::Stack
     Properties:
-      TemplateURL: https://s3.amazonaws.com/ecs-refarch-cloudformation/infrastructure/lifecyclehook.yaml
+      TemplateURL: https://s3-us-west-2.amazonaws.com/seran.cloudformation-templates/lifecyclehook.yaml
       Parameters:
         Cluster: !GetAtt ECS.Outputs.Cluster
         ECSAutoScalingGroupName: !GetAtt ECS.Outputs.ECSAutoScalingGroupName
 
 Outputs:
-  ProductServiceUrl:
-    Description: The URL endpoint for the product service
-    Value: !Join ["/", [!GetAtt ALB.Outputs.LoadBalancerUrl, "products"]]
-
-  WebsiteServiceUrl:
-    Description: The URL endpoint for the website service
-    Value: !Join ["", [!GetAtt ALB.Outputs.LoadBalancerUrl, "/"]]
+  utilityServiceUrl:
+    Description: The URL endpoint for the ballerina service
+    Value: !Join ["", [!GetAtt ALB.Outputs.LoadBalancerUrl, "/utility"]]
